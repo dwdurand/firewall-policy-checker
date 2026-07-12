@@ -5,7 +5,7 @@ import io
 st.set_page_config(page_title="A1 Cyber Services - Firewall Audit Tool", layout="wide")
 
 st.title("🛡️ Firewall Policy Sanity Checker")
-st.write("Upload a Palo Alto Excel export to instantly view executive metrics, security gaps, and export remediation reports.")
+st.write("Upload a Palo Alto Excel export to instantly view executive metrics, security gaps, and export explicit remediation reports.")
 
 uploaded_file = st.file_uploader("Upload Firewall Policy Export", type=["xlsx"])
 
@@ -18,26 +18,30 @@ if uploaded_file is not None:
         # --- 1. EXECUTIVE DASHBOARD METRICS ---
         total_rules = len(df)
         
-        # Calculate risks for metrics
+        # Isolate and stamp specific audit findings
         permissive_df = df[
             (df['Source Address'].astype(str).str.lower() == 'any') | 
             (df['Destination Address'].astype(str).str.lower() == 'any')
-        ]
+        ].copy()
+        permissive_df['Audit Finding'] = "Critical Exposure: Wide-Open 'Any' Address Configuration"
         
         insecure_apps = ['telnet', 'http', 'ftp']
         protocol_df = df[
             df['Application'].astype(str).str.lower().isin(insecure_apps) & 
             (df['Action'].astype(str).str.lower() == 'allow')
-        ]
+        ].copy()
+        protocol_df['Audit Finding'] = "Protocol Risk: Cleartext Insecure Service Allowed"
         
         profile_df = df[
             (df['Profile'].astype(str).str.lower() == 'none') & 
             (df['Action'].astype(str).str.lower() == 'allow')
-        ]
+        ].copy()
+        profile_df['Audit Finding'] = "Hygiene Gap: ALLOW Rule Completely Missing Security Profile"
         
         logging_df = df[
             (df['Log Setting'].astype(str).str.lower() == 'none')
-        ]
+        ].copy()
+        logging_df['Audit Finding'] = "Compliance Gap: Visibility Lost - Traffic Logging Explicitly Disabled"
         
         total_gaps = len(permissive_df) + len(protocol_df) + len(profile_df) + len(logging_df)
 
@@ -50,40 +54,32 @@ if uploaded_file is not None:
         
         st.divider()
 
-        # --- 2. SECURITY AUDIT RESULTS (SPLIT LAYOUT) ---
+        # --- 2. SECURITY AUDIT RESULTS ---
         st.subheader("🔍 Technical Security Audit")
         col1, col2 = st.columns(2)
         
-        # Left Column: Network & Protocol Exposures
         with col1:
             st.markdown("### 🌐 Network & Protocol Risks")
-            
-            # Address Exposure
             if not permissive_df.empty:
                 st.warning(f"⚠️ Found {len(permissive_df)} rules with 'any' configurations:")
                 st.dataframe(permissive_df[['Rule Name', 'Source Address', 'Destination Address', 'Action']], use_container_width=True)
             else:
                 st.success("✅ No wide-open 'any' address rules found.")
                 
-            # Protocol Violations
             if not protocol_df.empty:
                 st.error(f"🚨 Found {len(protocol_df)} ALLOWED rules using insecure cleartext protocols:")
                 st.dataframe(protocol_df[['Rule Name', 'Application', 'Service', 'Action']], use_container_width=True)
             else:
                 st.success("✅ No rules are allowing unencrypted management protocols (Telnet/HTTP/FTP).")
         
-        # Right Column: Profile & Logging Hygiene
         with col2:
             st.markdown("### 🧽 Security Profile & Logging Hygiene")
-            
-            # Missing Security Profiles
             if not profile_df.empty:
                 st.error(f"🚨 Found {len(profile_df)} ALLOWED rules completely missing Security Profiles:")
                 st.dataframe(profile_df[['Rule Name', 'Source Zone', 'Destination Zone', 'Profile', 'Action']], use_container_width=True)
             else:
                 st.success("✅ All allowed rules have an attached Security Profile.")
                 
-            # Disabled/Missing Logging
             if not logging_df.empty:
                 st.warning(f"⚠️ Found {len(logging_df)} rules with logging explicitly set to 'none':")
                 st.dataframe(logging_df[['Rule Name', 'Source Zone', 'Destination Zone', 'Log Setting']], use_container_width=True)
@@ -92,16 +88,20 @@ if uploaded_file is not None:
 
         st.divider()
 
-        # --- 3. EXPORT & REMEDIATION REPORT GENERATION ---
+        # --- 3. EXPORT WITH EXPLICIT FINDINGS COLUMN ---
         st.subheader("📋 Actionable Remediation Export")
         st.write("Generate a filtered Excel tracking sheet containing only the identified security gaps for engineering review.")
         
-        # Build remediation dataframe
         remediation_frames = [permissive_df, protocol_df, profile_df, logging_df]
-        remediation_master = pd.concat(remediation_frames).drop_duplicates(subset=['UUID', 'Rule Name'])
         
-        if not remediation_master.empty:
-            # Create an in-memory Excel file buffer using openpyxl via pandas
+        if total_gaps > 0:
+            # Merge findings cleanly without duplicating rule lines
+            remediation_master = pd.concat(remediation_frames).drop_duplicates(subset=['UUID', 'Rule Name'])
+            
+            # Reorder columns to put 'Audit Finding' right out front at index 0
+            cols = ['Audit Finding'] + [col for col in remediation_master.columns if col != 'Audit Finding']
+            remediation_master = remediation_master[cols]
+            
             buffer = io.BytesIO()
             with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
                 remediation_master.to_excel(writer, sheet_name='Remediation Action Items', index=False)
