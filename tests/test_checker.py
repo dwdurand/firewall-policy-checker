@@ -3,6 +3,7 @@ import io
 import json
 import runpy
 import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -130,5 +131,37 @@ class CheckerTests(unittest.TestCase):
             fn(pd.DataFrame([rule('a',disabled='maybe')]))
         with self.assertRaises(ValueError):
             fn(pd.DataFrame([rule('a')]).drop(columns='Service'))
+
+    def test_unused_rules(self):
+        fn=self.app['find_unused_rules']
+        self.assertIsNone(fn(pd.DataFrame([{'Rule Name':'a','Disabled':'no'}])))   # no column -> check did not run
+        self.assertIsNone(self.app['unused_result'])                              # sample has no hit counts
+        frame=pd.DataFrame([
+            {'Rule Name':'zero','Disabled':'no','Hit Count':0},
+            {'Rule Name':'used','Disabled':'no','Hit Count':12},
+            {'Rule Name':'zero-disabled','Disabled':'yes','Hit Count':0},
+            {'Rule Name':'unknown','Disabled':'no','Hit Count':None},
+            {'Rule Name':'text-zero','Disabled':'no','Hit Count':'0'},
+            {'Rule Name':'garbage','Disabled':'no','Hit Count':'n/a'},
+        ])
+        self.assertEqual(list(fn(frame)['Rule Name']),['zero','text-zero'])
+        with self.assertRaises(ValueError):
+            fn(frame.assign(Disabled='maybe'))
+
+    def test_dashboard_with_hit_counts(self):
+        sample=self.app['df'].copy()
+        sample['Hit Count']=[0 if name in {'protected','application-list'} else 5 for name in sample['Rule Name']]
+        path=Path(tempfile.mkdtemp())/'hits.xlsx'
+        with pd.ExcelWriter(path,engine='openpyxl') as writer:
+            pd.DataFrame([['title']]).to_excel(writer,sheet_name='firewall',index=False,header=False)
+            sample.to_excel(writer,sheet_name='firewall',index=False,startrow=1)
+        ui=RecordedUI(); ui.file_uploader=lambda *a,**k:str(path)
+        with patch.dict(sys.modules,{'streamlit':ui}):
+            app=runpy.run_path(str(ROOT/'app.py'),run_name='__main__')
+        self.assertFalse([e for e in ui.errors if e.startswith('Error reading')])
+        self.assertEqual(set(app['unused_df']['Rule Name']),{'protected','application-list'})
+        self.assertIn('Hit Count',app['shadow_df'].columns)
+        sheet=pd.read_excel(io.BytesIO(ui.export),sheet_name='Unused Rules')
+        self.assertEqual(set(sheet['Rule Name']),{'protected','application-list'})
 
 if __name__=='__main__': unittest.main()

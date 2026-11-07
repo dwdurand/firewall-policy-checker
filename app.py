@@ -171,6 +171,25 @@ def find_shadowed_rules(df):
     return result
 
 
+def find_unused_rules(df):
+    """Enabled rules with a hit count of exactly 0.
+
+    Returns None when the export has no Hit Count column, so the UI can say
+    the check did not run. Blank or non-numeric counts are unknown and never
+    flagged. Counts reset on reboot, counter reset and some upgrades, and a
+    new rule naturally has zero hits; see Last Hit and Rule Created.
+    """
+    if 'Hit Count' not in df.columns:
+        return None
+    if 'Disabled' not in df.columns:
+        raise ValueError('Missing columns for unused-rule check: Disabled')
+    disabled = df['Disabled'].astype('string').str.strip().str.casefold()
+    if (disabled.isna() | ~disabled.isin({'yes', 'no', 'true', 'false', '1', '0'})).any():
+        raise ValueError('Unknown Disabled state; unused-rule check was not completed.')
+    hits = pd.to_numeric(df['Hit Count'], errors='coerce')
+    return df[disabled.isin({'no', 'false', '0'}) & hits.eq(0).fillna(False)]
+
+
 st.set_page_config(page_title="A1 Cyber Services - Firewall Audit Tool", layout="wide")
 
 st.title("🛡️ Firewall Policy Sanity Checker")
@@ -198,9 +217,13 @@ if uploaded_file is not None:
 
         shadow_df = find_shadowed_rules(df)
 
+        unused_result = find_unused_rules(df)
+        has_hit_counts = unused_result is not None
+        unused_df = unused_result if has_hit_counts else df.iloc[0:0]
+
         total_gaps = (len(permissive_df) + len(protocol_df) + len(profile_df)
                       + len(logging_df) + len(forwarding_df) + len(logging_unknown_df)
-                      + len(shadow_df))
+                      + len(shadow_df) + len(unused_df))
 
         # --- ONE STEP FORWARD: MULTI-TAB WORKSPACE FOR V1.1 ---
         tab1, tab2, tab3 = st.tabs(["📊 Executive Dashboard", "🔍 Detailed Audit Findings", "🤖 AI Explanations (optional)"])
@@ -275,7 +298,7 @@ if uploaded_file is not None:
                 st.warning(f"Found {len(shadow_df)} enabled rules fully covered by an earlier rule"
                            + (f"; {conflicts} with a different action." if conflicts else "."))
                 shadow_columns = [c for c in ['Rule Name', 'Action', 'Shadowed By', 'Shadowed By Action',
-                                              'Action Conflict', 'Rulebase', 'Position', *SHADOW_FIELDS]
+                                              'Action Conflict', 'Hit Count', 'Rulebase', 'Position', *SHADOW_FIELDS]
                                   if c in shadow_df.columns]
                 st.dataframe(shadow_df[shadow_columns], use_container_width=True)
             else:
@@ -283,6 +306,22 @@ if uploaded_file is not None:
             st.write("Compares zones, addresses, applications and services by name, in row order. Groups, users, "
                      "URL categories, HIP, schedules and other match criteria are not resolved, and rules with "
                      "negation or blank fields are skipped. Confirm with hit counts and Panorama's policy view before removing a rule.")
+
+            st.markdown("### 💤 Unused Rules (zero hits)")
+            if not has_hit_counts:
+                st.info("No Hit Count column in this export, so the unused-rule check did not run. "
+                        "Use panos_source.py --hit-counts (firewall) or --hit-count-xml to include counts.")
+            elif not unused_df.empty:
+                st.warning(f"Found {len(unused_df)} enabled rules with a hit count of 0.")
+                unused_columns = [c for c in ['Rule Name', 'Action', 'Hit Count', 'Last Hit', 'Rule Created',
+                                              'Rulebase', 'Position', *SHADOW_FIELDS] if c in unused_df.columns]
+                st.dataframe(unused_df[unused_columns], use_container_width=True)
+            else:
+                st.success("Every enabled rule with a known hit count has at least one hit.")
+            if has_hit_counts:
+                st.write("Counts reset on reboot, manual reset and some upgrades, and new rules start at zero. "
+                         "Check Rule Created and the counter reset time, and cover a full business cycle "
+                         "(month-end, quarter-end) before removing a rule. Blank counts are unknown and not flagged.")
 
             st.divider()
 
@@ -295,13 +334,15 @@ if uploaded_file is not None:
                                   forwarding_df, logging_unknown_df]
             remediation_master = pd.concat(remediation_frames).drop_duplicates(subset=['UUID', 'Rule Name'])
 
-            if not remediation_master.empty or not shadow_df.empty:
+            if not remediation_master.empty or not shadow_df.empty or not unused_df.empty:
                 # Create an in-memory Excel file buffer using openpyxl via pandas
                 buffer = io.BytesIO()
                 with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
                     remediation_master.to_excel(writer, sheet_name='Remediation Action Items', index=False)
                     if not shadow_df.empty:
                         shadow_df.to_excel(writer, sheet_name='Shadowed Rules', index=False)
+                    if not unused_df.empty:
+                        unused_df.to_excel(writer, sheet_name='Unused Rules', index=False)
 
                 st.download_button(
                     label="📥 Download Remediation Excel Report",
@@ -327,6 +368,7 @@ if uploaded_file is not None:
                 "session_logging_unknown": logging_unknown_df,
                 "missing_log_forwarding": forwarding_df,
                 "shadowed_rule": shadow_df,
+                "unused_rule": unused_df,
             }
             redact = st.checkbox("Replace rule names and addresses with placeholders before sending", value=True)
             payload, placeholders = ai_explainer.build_payload(findings_by_type, redact=redact)

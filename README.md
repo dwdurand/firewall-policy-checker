@@ -42,6 +42,7 @@ This package contains `app.py`, the optional `ai_explainer.py` module, a synthet
 | Session logging disabled | Enabled rules, including deny rules | Both session-start and session-end logging flags are explicitly off |
 | Missing forwarding profile | Enabled rules, including deny rules | Log Setting is blank, whitespace, or `none` |
 | Unknown session-logging state | Enabled rules | Either session-logging flag is blank or unrecognized |
+| Unused rule | Enabled rules, only when the input has a `Hit Count` column | Hit count is exactly 0. Blank or unknown counts are not flagged |
 | Shadowed rule candidate | Enabled rules without negation | An earlier enabled rule has `any` or a superset of member names in source/destination zone, source/destination address, application and service. Reported with the shadowing rule and whether the actions differ |
 
 The application check accepts semicolon, comma, or whitespace separators, including line breaks. Matching ignores capitalization and surrounding whitespace. For example, `ssl;telnet` matches; `sftp` and `telnet-custom` do not.
@@ -190,10 +191,11 @@ python panos_source.py --xml-file running-config.xml --device-group Branches --o
 - Profile is the group name, or `type=name` pairs for individual profiles; blank when none is attached.
 - Adds `Rulebase`, `Position`, `Negate Source` and `Negate Destination` columns for review context. The checks ignore them.
 - `--insecure` disables TLS verification and is meant only for an isolated lab.
+- `--hit-counts` (firewall only) also runs the one allowed operational command, `show rule-hit-count`, for the vsys security rulebase. It adds `Hit Count`, `Last Hit` and `Rule Created`. Every other op command is refused in code. `--hit-count-xml` merges saved output of that command instead, which works offline with `--xml-file`. Panorama/device-group hit counts are not supported yet.
 
 ## Scope and limitations
 
-- The dashboard reads an uploaded workbook. `panos_source.py` can read a device over the XML API using only show/get. Nothing creates, modifies, deletes, commits, or pushes configuration.
+- The dashboard reads an uploaded workbook. `panos_source.py` can read a device over the XML API using only config show/get and, with `--hit-counts`, `show rule-hit-count`. Nothing creates, modifies, deletes, commits, or pushes configuration.
 - Resolves which device-group rulebases apply, but does not calculate effective policy. Rule order is recorded (`Rulebase`, `Position`) but not evaluated. Device-group inheritance is tested offline only.
 - Does not assess address/application groups, dependencies, NAT, routing, or effective reachability.
 - The shadow check compares member names in row order (evaluation order for `panos_source.py` output). It does not resolve groups or compare users, URL categories, HIP, schedules, or other match criteria. Groups can hide real overlaps, and unexported criteria can make a flagged rule reachable. Rules with negation or blank match fields are skipped. The export adds a `Shadowed Rules` sheet. Confirm with hit counts before removing a rule.
@@ -212,6 +214,6 @@ Use synthetic or appropriately sanitized workbooks for demonstrations and reposi
 - Validate an agreed real export format using sanitized data.
 - Validate `panos_source.py` against a lab Panorama and a sanitized production config.
 - Validate device-group inheritance against a lab Panorama or a sanitized Panorama config export.
-- Add a zero-hit-count check, and use hit counts to confirm shadow candidates.
+- Validate hit-count ingest on a firewall that carries real traffic. Add Panorama per-device hit counts.
 - Resolve address and service groups for the shadow check.
 - Review live Claude explanations against sanitized real findings and refine the prompt.
