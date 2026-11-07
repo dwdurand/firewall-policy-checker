@@ -42,6 +42,7 @@ This package contains `app.py`, the optional `ai_explainer.py` module, a synthet
 | Session logging disabled | Enabled rules, including deny rules | Both session-start and session-end logging flags are explicitly off |
 | Missing forwarding profile | Enabled rules, including deny rules | Log Setting is blank, whitespace, or `none` |
 | Unknown session-logging state | Enabled rules | Either session-logging flag is blank or unrecognized |
+| Shadowed rule candidate | Enabled rules without negation | An earlier enabled rule has `any` or a superset of member names in source/destination zone, source/destination address, application and service. Reported with the shadowing rule and whether the actions differ |
 
 The application check accepts semicolon, comma, or whitespace separators, including line breaks. Matching ignores capitalization and surrounding whitespace. For example, `ssl;telnet` matches; `sftp` and `telnet-custom` do not.
 
@@ -194,7 +195,8 @@ python panos_source.py --xml-file running-config.xml --device-group Branches --o
 
 - The dashboard reads an uploaded workbook. `panos_source.py` can read a device over the XML API using only show/get. Nothing creates, modifies, deletes, commits, or pushes configuration.
 - Resolves which device-group rulebases apply, but does not calculate effective policy. Rule order is recorded (`Rulebase`, `Position`) but not evaluated. Device-group inheritance is tested offline only.
-- Does not assess address/application groups, dependencies, negation, rule order, shadowing, NAT, routing, or effective reachability.
+- Does not assess address/application groups, dependencies, NAT, routing, or effective reachability.
+- The shadow check compares member names in row order (evaluation order for `panos_source.py` output). It does not resolve groups or compare users, URL categories, HIP, schedules, or other match criteria. Groups can hide real overlaps, and unexported criteria can make a flagged rule reachable. Rules with negation or blank match fields are skipped. The export adds a `Shadowed Rules` sheet. Confirm with hit counts before removing a rule.
 - The explicit application list is limited to `telnet`, `http`, and `ftp`. It does not establish whether all cleartext traffic is blocked; `any`, other App-IDs, and service ports require separate review.
 - Does not inspect security-profile contents, log-forwarding destinations, actual log generation, or delivery to Panorama/syslog.
 - A named forwarding profile is not evidence of successful forwarding. Both session flags being off concerns session traffic logging; it does not establish that every other log type is disabled.
@@ -210,5 +212,6 @@ Use synthetic or appropriately sanitized workbooks for demonstrations and reposi
 - Validate an agreed real export format using sanitized data.
 - Validate `panos_source.py` against a lab Panorama and a sanitized production config.
 - Validate device-group inheritance against a lab Panorama or a sanitized Panorama config export.
-- Add shadowed-rule and zero-hit-count checks.
+- Add a zero-hit-count check, and use hit counts to confirm shadow candidates.
+- Resolve address and service groups for the shadow check.
 - Review live Claude explanations against sanitized real findings and refine the prompt.

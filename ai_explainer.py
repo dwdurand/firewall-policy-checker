@@ -51,6 +51,13 @@ FINDING_TYPES: dict[str, str] = {
         "external collectors from this rule. Profile contents and inheritance were "
         "not verified."
     ),
+    "shadowed_rule": (
+        "Enabled rule whose zones, addresses, applications and services are each "
+        "'any' or a subset (by name) of an earlier enabled rule named in 'Shadowed "
+        "By', so it may never match. 'Action Conflict' is yes when the two actions "
+        "differ. Groups, users, URL categories, HIP, schedules and other match "
+        "criteria were not compared; hit counts were not checked."
+    ),
 }
 
 # Only these columns may be sent. UUID, descriptions, tags, owners and every
@@ -68,9 +75,13 @@ ALLOWED_FIELDS = [
     "Log at Session Start",
     "Log at Session End",
     "Log Setting",
+    "Shadowed By",
+    "Shadowed By Action",
+    "Action Conflict",
 ]
 
 ADDRESS_FIELDS = {"Source Address", "Destination Address"}
+RULE_NAME_FIELDS = {"Rule Name", "Shadowed By"}
 
 SYSTEM_PROMPT = """You explain firewall policy review findings for a Palo Alto Networks \
 security policy export. A deterministic Python tool has already decided each \
@@ -151,7 +162,7 @@ def build_payload(
                 if column not in row.index:
                     continue
                 value = _clean(row[column])
-                if redact and column == "Rule Name" and value:
+                if redact and column in RULE_NAME_FIELDS and value:
                     value = placeholder("RULE", value)
                 elif redact and column in ADDRESS_FIELDS and value:
                     parts = [p.strip() for p in re.split(r"[;,\n]+", value) if p.strip()]

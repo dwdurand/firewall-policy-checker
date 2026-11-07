@@ -88,4 +88,47 @@ class CheckerTests(unittest.TestCase):
         self.assertEqual(len(exported),8)
         self.assertEqual(set(exported['Rule Name']),expected)
 
+    def test_shadow_on_sample(self):
+        shadow=self.app['shadow_df']
+        expected={'missing-none','missing-blank','missing-spaced-none','deny-no-profile','uppercase',
+                  'profile-group','spaced-action','missing-whitespace','forwarding-none-local-log-on'}
+        self.assertEqual(set(shadow['Rule Name']),expected)   # disabled, superset-app and any-source rules excluded
+        self.assertTrue((shadow['Shadowed By']=='protected').all())
+        self.assertEqual(set(shadow.loc[shadow['Action Conflict']=='yes','Rule Name']),{'deny-no-profile'})
+        sheet=pd.read_excel(io.BytesIO(self.ui.export),sheet_name='Shadowed Rules')
+        self.assertEqual(set(sheet['Rule Name']),expected)
+
+    def test_shadow_cases(self):
+        fn=self.app['find_shadowed_rules']
+        def rule(name,src='10.0.0.1',dst='10.0.0.2',app='ssl',svc='application-default',
+                 sz='trust',dz='untrust',action='allow',disabled='no',neg='no'):
+            return {'Rule Name':name,'Source Zone':sz,'Destination Zone':dz,'Source Address':src,
+                    'Destination Address':dst,'Application':app,'Service':svc,'Action':action,
+                    'Disabled':disabled,'Negate Source':neg,'Negate Destination':'no'}
+        cases=[
+            ('any covers specific',[rule('a',src='any'),rule('b')],{'b':'a'}),
+            ('superset list covers subset',[rule('a',app='ssl;web-browsing'),rule('b')],{'b':'a'}),
+            ('subset does not cover superset',[rule('a'),rule('b',app='ssl;web-browsing')],{}),
+            ('specific does not cover any',[rule('a'),rule('b',dst='any')],{}),
+            ('later broad rule does not shadow earlier',[rule('a'),rule('b',src='any')],{}),
+            ('different zone',[rule('a',dz='dmz'),rule('b')],{}),
+            ('different service',[rule('a',svc='service-https'),rule('b')],{}),
+            ('disabled shadower ignored',[rule('a',disabled='yes'),rule('b')],{}),
+            ('disabled rule not reported',[rule('a'),rule('b',disabled='yes')],{}),
+            ('negated rules skipped',[rule('a',src='any',neg='yes'),rule('b')],{}),
+            ('blank field skipped',[rule('a',src='any'),rule('b',app='')],{}),
+            ('case and separators',[rule('a',app='SSL, Web-Browsing'),rule('b',app='web-browsing')],{'b':'a'}),
+            ('first shadower reported',[rule('a',src='any'),rule('c',src='any',dst='any'),rule('b')],{'b':'a'}),
+        ]
+        for name,rules,expected in cases:
+            with self.subTest(case=name):
+                result=fn(pd.DataFrame(rules))
+                self.assertEqual(dict(zip(result['Rule Name'],result['Shadowed By'])),expected)
+        result=fn(pd.DataFrame([rule('a',src='any',action='deny'),rule('b')]))
+        self.assertEqual(result['Action Conflict'].tolist(),['yes'])
+        with self.assertRaises(ValueError):
+            fn(pd.DataFrame([rule('a',disabled='maybe')]))
+        with self.assertRaises(ValueError):
+            fn(pd.DataFrame([rule('a')]).drop(columns='Service'))
+
 if __name__=='__main__': unittest.main()
