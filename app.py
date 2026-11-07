@@ -107,6 +107,70 @@ def find_broad_address_rules(df):
               & action.eq('allow').fillna(False) & broad]
 
 
+SHADOW_FIELDS = ['Source Zone', 'Destination Zone', 'Source Address',
+                 'Destination Address', 'Application', 'Service']
+
+
+def find_shadowed_rules(df):
+    """Flag enabled rules fully covered by an earlier enabled rule.
+
+    Rule B is a shadow candidate when an earlier rule A has, in every one of
+    SHADOW_FIELDS, either 'any' or a superset of B's member names. Row order
+    is treated as evaluation order. Matching is by name only: address/
+    application/service groups, users, URL categories, HIP, schedules and
+    other match criteria are not resolved. A group can therefore hide a real
+    overlap (missed finding), and an unexported match field can make a
+    flagged rule reachable (false finding). Rules with negation or blank
+    match fields are skipped rather than guessed.
+    """
+    required = {'Rule Name', 'Action', 'Disabled', *SHADOW_FIELDS}
+    missing = sorted(required - set(df.columns))
+    if missing:
+        raise ValueError('Missing columns for shadow check: ' + ', '.join(missing))
+
+    def normalized(column):
+        return df[column].astype('string').str.strip().str.casefold()
+    disabled = normalized('Disabled')
+    if (disabled.isna() | ~disabled.isin({'yes', 'no', 'true', 'false', '1', '0'})).any():
+        raise ValueError('Unknown Disabled state; shadow check was not completed.')
+    enabled = disabled.isin({'no', 'false', '0'})
+    negated = pd.Series(False, index=df.index)
+    for column in ('Negate Source', 'Negate Destination'):
+        if column in df.columns:
+            negated |= normalized(column).isin({'yes', 'true', '1'}).fillna(False)
+
+    def members(value):
+        if pd.isna(value):
+            return None
+        tokens = {t for t in re.split(r'[;,\s]+', str(value).strip().casefold()) if t}
+        return tokens or None
+
+    candidates = []
+    for idx in df.index[enabled & ~negated]:
+        fields = [members(df.at[idx, column]) for column in SHADOW_FIELDS]
+        if all(fields):
+            candidates.append((idx, fields))
+
+    def covers(earlier, later):
+        return all('any' in a or ('any' not in b and b <= a) for a, b in zip(earlier, later))
+
+    action = normalized('Action')
+    rows, by, by_action, conflict = [], [], [], []
+    for pos, (idx, fields) in enumerate(candidates):
+        for prior_idx, prior_fields in candidates[:pos]:
+            if covers(prior_fields, fields):
+                rows.append(idx)
+                by.append(df.at[prior_idx, 'Rule Name'])
+                by_action.append(df.at[prior_idx, 'Action'])
+                conflict.append('yes' if action[prior_idx] != action[idx] else 'no')
+                break
+    result = df.loc[rows].copy()
+    result['Shadowed By'] = by
+    result['Shadowed By Action'] = by_action
+    result['Action Conflict'] = conflict
+    return result
+
+
 st.set_page_config(page_title="A1 Cyber Services - Firewall Audit Tool", layout="wide")
 
 st.title("🛡️ Firewall Policy Sanity Checker")
@@ -132,8 +196,11 @@ if uploaded_file is not None:
 
         logging_df, forwarding_df, logging_unknown_df = assess_logging(df)
 
+        shadow_df = find_shadowed_rules(df)
+
         total_gaps = (len(permissive_df) + len(protocol_df) + len(profile_df)
-                      + len(logging_df) + len(forwarding_df) + len(logging_unknown_df))
+                      + len(logging_df) + len(forwarding_df) + len(logging_unknown_df)
+                      + len(shadow_df))
 
         # --- ONE STEP FORWARD: MULTI-TAB WORKSPACE FOR V1.1 ---
         tab1, tab2, tab3 = st.tabs(["📊 Executive Dashboard", "🔍 Detailed Audit Findings", "🤖 AI Explanations (optional)"])
@@ -201,6 +268,22 @@ if uploaded_file is not None:
                     st.write("No enabled rules have a blank or 'none' log-forwarding profile in Log Setting.")
                 st.write("Log Setting is interpreted as the forwarding profile. Profile contents, delivery, and effective inherited settings are not verified. Finding counts can overlap on the same rule.")
 
+            # Shadowed rules span the whole rulebase, so they get a full-width section.
+            st.markdown("### 🪞 Shadowed Rule Candidates")
+            if not shadow_df.empty:
+                conflicts = int((shadow_df['Action Conflict'] == 'yes').sum())
+                st.warning(f"Found {len(shadow_df)} enabled rules fully covered by an earlier rule"
+                           + (f"; {conflicts} with a different action." if conflicts else "."))
+                shadow_columns = [c for c in ['Rule Name', 'Action', 'Shadowed By', 'Shadowed By Action',
+                                              'Action Conflict', 'Rulebase', 'Position', *SHADOW_FIELDS]
+                                  if c in shadow_df.columns]
+                st.dataframe(shadow_df[shadow_columns], use_container_width=True)
+            else:
+                st.success("No enabled rule is fully covered by an earlier rule on the compared fields.")
+            st.write("Compares zones, addresses, applications and services by name, in row order. Groups, users, "
+                     "URL categories, HIP, schedules and other match criteria are not resolved, and rules with "
+                     "negation or blank fields are skipped. Confirm with hit counts and Panorama's policy view before removing a rule.")
+
             st.divider()
 
             # --- 3. EXPORT & REMEDIATION REPORT GENERATION (Exact Sunday Logic) ---
@@ -212,11 +295,13 @@ if uploaded_file is not None:
                                   forwarding_df, logging_unknown_df]
             remediation_master = pd.concat(remediation_frames).drop_duplicates(subset=['UUID', 'Rule Name'])
 
-            if not remediation_master.empty:
+            if not remediation_master.empty or not shadow_df.empty:
                 # Create an in-memory Excel file buffer using openpyxl via pandas
                 buffer = io.BytesIO()
                 with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
                     remediation_master.to_excel(writer, sheet_name='Remediation Action Items', index=False)
+                    if not shadow_df.empty:
+                        shadow_df.to_excel(writer, sheet_name='Shadowed Rules', index=False)
 
                 st.download_button(
                     label="📥 Download Remediation Excel Report",
@@ -241,6 +326,7 @@ if uploaded_file is not None:
                 "session_logging_disabled": logging_df,
                 "session_logging_unknown": logging_unknown_df,
                 "missing_log_forwarding": forwarding_df,
+                "shadowed_rule": shadow_df,
             }
             redact = st.checkbox("Replace rule names and addresses with placeholders before sending", value=True)
             payload, placeholders = ai_explainer.build_payload(findings_by_type, redact=redact)
