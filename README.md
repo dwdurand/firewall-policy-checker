@@ -156,10 +156,31 @@ These are focused synthetic checks, not a claim of comprehensive test coverage. 
 
 Tests record Streamlit UI calls while executing the actual app, read the real sample workbook, and reopen its in-memory Excel export. They do not automate a browser. Recorded browser verification is included under `validation/`.
 
+## Read-only PAN-OS ingest (`panos_source.py`)
+
+Builds the same `firewall` workbook the dashboard reads, directly from a firewall/Panorama or a saved config file. `app.py` and the checks are unchanged.
+
+```powershell
+# Live, read-only. Use an API key for a read-only admin role; it is sent in the X-PAN-KEY header.
+$env:PANOS_API_KEY = "<key>"
+python panos_source.py --host pano.lab.local --device-group Branches --ca-bundle lab-ca.pem --out rules.xlsx
+python panos_source.py --host fw.lab.local --vsys vsys1 --out rules.xlsx
+
+# Offline, from an exported running-config
+python panos_source.py --xml-file running-config.xml --device-group Branches --out rules.xlsx
+```
+
+- Sends only `type=config` with `action=show` (running, default) or `action=get` (`--candidate`). Any other action is refused in code.
+- Panorama: reads shared pre, device-group pre, device-group post and shared post rulebases, in that order. Parent device groups are not walked yet.
+- Members are joined with `;`. Absent elements take PAN-OS defaults (disabled `no`, log-start `no`, log-end `yes`).
+- Profile is the group name, or `type=name` pairs for individual profiles; blank when none is attached.
+- Adds `Rulebase`, `Position`, `Negate Source` and `Negate Destination` columns for review context. The checks ignore them.
+- `--insecure` disables TLS verification and is meant only for an isolated lab.
+
 ## Scope and limitations
 
-- Reads an uploaded workbook and generates review output. It does not connect to Panorama or firewalls, request API credentials, or create, modify, delete, commit, or push configuration.
-- Does not parse Panorama XML, resolve shared/device-group inheritance, combine pre/post rulebases, or calculate effective policy.
+- The dashboard reads an uploaded workbook. `panos_source.py` can read a device over the XML API using only show/get. Nothing creates, modifies, deletes, commits, or pushes configuration.
+- Does not resolve parent device-group inheritance or calculate effective policy. Rule order is recorded (`Rulebase`, `Position`) but not evaluated.
 - Does not assess address/application groups, dependencies, negation, rule order, shadowing, NAT, routing, or effective reachability.
 - The explicit application list is limited to `telnet`, `http`, and `ftp`. It does not establish whether all cleartext traffic is blocked; `any`, other App-IDs, and service ports require separate review.
 - Does not inspect security-profile contents, log-forwarding destinations, actual log generation, or delivery to Panorama/syslog.
@@ -174,5 +195,6 @@ Use synthetic or appropriately sanitized workbooks for demonstrations and reposi
 ## Planned next steps
 
 - Validate an agreed real export format using sanitized data.
-- Develop Panorama parsing incrementally as a separate read-only capability.
+- Validate `panos_source.py` against a lab Panorama and a sanitized production config.
+- Walk parent device groups; add shadowed-rule and zero-hit-count checks.
 - Review live Claude explanations against sanitized real findings and refine the prompt.
