@@ -10,6 +10,7 @@ from unittest.mock import patch
 import pandas as pd
 
 ROOT=Path(__file__).resolve().parents[1]
+sys.path.insert(0,str(ROOT))
 CASES=json.loads((ROOT/'tests/cases.json').read_text(encoding='utf-8'))
 
 class RecordedUI(types.ModuleType):
@@ -23,8 +24,12 @@ class RecordedUI(types.ModuleType):
     def columns(self,n): return [self for _ in range(n)]
     def error(self,message): self.errors.append(message)
     def download_button(self,**kwargs): self.export=kwargs['data']
+    def checkbox(self,*args,**kwargs): return kwargs.get('value',False)
+    def button(self,*args,**kwargs): return False
+    def expander(self,*args,**kwargs): return self
+    def spinner(self,*args,**kwargs): return self
     def __getattr__(self,name):
-        if name in {'set_page_config','title','write','success','subheader','metric','markdown','warning','divider','dataframe'}:
+        if name in {'set_page_config','title','write','success','subheader','metric','markdown','warning','divider','dataframe','code','info','caption'}:
             return lambda *args,**kwargs: None
         raise AttributeError(name)
 

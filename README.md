@@ -4,13 +4,13 @@ A read-only Python and Streamlit tool for reviewing Palo Alto Networks security-
 
 Developed by Dave Durand / A1 Cyber Services LLC.
 
-**This version uses deterministic checks. It does not use an LLM or perform AI analysis.**
+**Deterministic Python checks decide every finding. An optional, opt-in tab uses Claude (Anthropic API) to explain those findings; it never decides what is a finding.**
 
 ## Status
 
 The corrected implementation has been exercised with synthetic data through offline tests, the Streamlit dashboard, and browser-downloaded Excel reports. It has not been validated against production exports in this development cycle.
 
-This package contains the corrected implementation as `app.py`, its synthetic sample workbook, repeatable offline tests, and recorded validation results. No AI/API integration is included.
+This package contains `app.py`, the optional `ai_explainer.py` module, a synthetic sample workbook, repeatable offline tests, and recorded validation results. The AI module is tested offline with a simulated Claude client and was exercised once live (claude-sonnet-5-5) against the synthetic workbook: all 8 findings were explained, with rule names and addresses sent as placeholders and restored locally. Live output quality depends on the model and should be reviewed.
 
 ## What it checks
 
@@ -26,6 +26,32 @@ This package contains the corrected implementation as `app.py`, its synthetic sa
 The application check accepts semicolon, comma, or whitespace separators, including line breaks. Matching ignores capitalization and surrounding whitespace. For example, `ssl;telnet` matches; `sftp` and `telnet-custom` do not.
 
 Address matches are review candidates, not proof of network exposure. A named profile indicates attachment only; the tool does not verify its contents or effectiveness.
+
+## Optional AI explanations
+
+The **🤖 AI Explanations (optional)** tab sends the findings from the checks above to Claude and returns, for each finding:
+
+- **Manager summary**: why it matters, in plain language.
+- **Engineer note**: what to review in the rule or Panorama.
+- **Verify before change**: what the check did not assess and must be confirmed first.
+
+How data is limited:
+
+- Only these fields from finding rows are sent: Rule Name, Source/Destination Zone, Source/Destination Address, Application, Service, Action, Profile, session logging flags, and Log Setting. The full export, UUIDs, and all other columns stay local.
+- By default, rule names and non-`any` address values are replaced with placeholders (`RULE-1`, `ADDR-1`) before sending and mapped back locally in the results.
+- The tab shows the exact JSON that will be sent before you click **Generate**.
+- Each finding carries the check's scope statement, so the model is told what was and was not assessed.
+- At most 25 findings are sent per request to bound cost.
+
+Enable it by setting an API key in your shell before starting Streamlit (never commit keys):
+
+```powershell
+$env:ANTHROPIC_API_KEY = "sk-ant-..."     # PowerShell
+# optional: $env:ANTHROPIC_MODEL = "claude-haiku-5-5"   (default: claude-sonnet-5-5)
+streamlit run app.py
+```
+
+Without a key, the tab shows the data preview and an instruction; the rest of the app is unaffected. AI output is advisory and must be verified before any change.
 
 ## Local setup
 
@@ -123,10 +149,10 @@ Tests record Streamlit UI calls while executing the actual app, read the real sa
 
 ## Data handling
 
-Use synthetic or appropriately sanitized workbooks for demonstrations and repository samples. Run the app locally and keep production exports, credentials, and generated reports out of GitHub. This implementation contains no external AI/API calls. Uploaded data is processed by the running local app; downloaded reports retain the selected input fields and should be handled accordingly.
+Use synthetic or appropriately sanitized workbooks for demonstrations and repository samples. Run the app locally and keep production exports, credentials, and generated reports out of GitHub. External calls occur only when you click **Generate explanations with Claude**; they send the previewed findings to Anthropic's API. Do not enable redaction-off mode with production data unless your data-handling policy allows it. Uploaded data is processed by the running local app; downloaded reports retain the selected input fields and should be handled accordingly.
 
 ## Planned next steps
 
 - Validate an agreed real export format using sanitized data.
 - Develop Panorama parsing incrementally as a separate read-only capability.
-- Explore evidence-grounded AI explanations only after structured findings are validated.
+- Review live Claude explanations against sanitized real findings and refine the prompt.

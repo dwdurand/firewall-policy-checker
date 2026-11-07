@@ -6,3 +6,4 @@ __pycache__/
 .streamlit/secrets.toml
 firewall_remediation_report*.xlsx
 production-data/
+firewall_ai_explanations*.csv

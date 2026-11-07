@@ -2,6 +2,10 @@ import streamlit as st
 import pandas as pd
 import io
 import re
+import os
+import json
+
+import ai_explainer
 
 
 def find_missing_profiles(df):
@@ -132,7 +136,7 @@ if uploaded_file is not None:
                       + len(logging_df) + len(forwarding_df) + len(logging_unknown_df))
 
         # --- ONE STEP FORWARD: MULTI-TAB WORKSPACE FOR V1.1 ---
-        tab1, tab2 = st.tabs(["📊 Executive Dashboard", "🔍 Detailed Audit Findings"])
+        tab1, tab2, tab3 = st.tabs(["📊 Executive Dashboard", "🔍 Detailed Audit Findings", "🤖 AI Explanations (optional)"])
 
         # --- TAB 1: EXECUTIVE DASHBOARD ---
         with tab1:
@@ -222,6 +226,64 @@ if uploaded_file is not None:
                 )
             else:
                 st.success("No findings from the implemented checks. This is not a complete policy assessment.")
+
+
+        # --- TAB 3: OPTIONAL CLAUDE EXPLANATIONS ---
+        # The checks above decide what a finding is; Claude only explains them.
+        with tab3:
+            st.subheader("🤖 AI Explanations (optional)")
+            st.write("Claude explains each finding for a manager and an engineer. "
+                     "Only the fields shown below are sent; the full export stays on this machine.")
+            findings_by_type = {
+                "broad_address": permissive_df,
+                "cleartext_application": protocol_df,
+                "missing_profile": profile_df,
+                "session_logging_disabled": logging_df,
+                "session_logging_unknown": logging_unknown_df,
+                "missing_log_forwarding": forwarding_df,
+            }
+            redact = st.checkbox("Replace rule names and addresses with placeholders before sending", value=True)
+            payload, placeholders = ai_explainer.build_payload(findings_by_type, redact=redact)
+            if not payload:
+                st.write("No findings to explain.")
+            else:
+                total_found = sum(len(f) for f in findings_by_type.values())
+                if total_found > len(payload):
+                    st.warning(f"Only the first {len(payload)} of {total_found} findings will be sent (cost limit).")
+                with st.expander(f"Exactly what will be sent ({len(payload)} findings)"):
+                    st.code(json.dumps(payload, indent=2), language="json")
+                if not os.environ.get("ANTHROPIC_API_KEY"):
+                    st.info("Set the ANTHROPIC_API_KEY environment variable and restart Streamlit to enable this tab.")
+                elif st.button("Generate explanations with Claude"):
+                    try:
+                        with st.spinner("Asking Claude to explain the findings..."):
+                            results = ai_explainer.explain_findings(payload, placeholders if redact else None)
+                        by_id = {item["id"]: item for item in payload}
+                        rows = []
+                        for result in results:
+                            source = by_id[result["id"]]
+                            rule_name = source["rule"].get("Rule Name", "")
+                            if redact:
+                                rule_name = placeholders.get(rule_name, rule_name)
+                            rows.append({
+                                "Finding": result["id"],
+                                "Type": source["finding_type"],
+                                "Rule Name": rule_name,
+                                "Manager Summary": result["manager_summary"],
+                                "Engineer Note": result["engineer_note"],
+                                "Verify Before Change": result["verify_before_change"],
+                            })
+                        explained = pd.DataFrame(rows)
+                        st.dataframe(explained, use_container_width=True, hide_index=True)
+                        st.download_button(
+                            label="📥 Download AI Explanations (CSV)",
+                            data=explained.to_csv(index=False).encode("utf-8"),
+                            file_name="firewall_ai_explanations.csv",
+                            mime="text/csv",
+                        )
+                        st.caption("AI-generated explanations. Verify against the rule and your environment before acting.")
+                    except Exception as exc:
+                        st.error(f"AI explanation failed: {exc}")
 
     except Exception as e:
         st.error(f"Error reading the data file: {e}")
