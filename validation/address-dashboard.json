@@ -1,0 +1,11 @@
+{
+  "dashboard_verified": true,
+  "rules_loaded": 13,
+  "address_findings": 0,
+  "profile_findings": 6,
+  "application_findings": 1,
+  "missing_forwarding_profiles": 1,
+  "unique_download_rules_verified": 8,
+  "deny_and_disabled_rules_excluded": true,
+  "scope": "Synthetic workbook; visible dashboard and browser-downloaded Excel verified."
+}

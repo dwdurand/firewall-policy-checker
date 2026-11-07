@@ -1,1 +1,8 @@
 .venv/
+__pycache__/
+*.py[cod]
+.env
+.env.*
+.streamlit/secrets.toml
+firewall_remediation_report*.xlsx
+production-data/

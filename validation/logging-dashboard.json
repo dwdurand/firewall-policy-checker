@@ -1,0 +1,11 @@
+{
+  "dashboard_verified": true,
+  "synthetic_rules_loaded": 13,
+  "session_logging_disabled": 0,
+  "missing_forwarding_profiles": 1,
+  "profile_findings": 6,
+  "application_findings": 1,
+  "download_unique_rules_verified": 9,
+  "disabled_rule_excluded": true,
+  "scope": "Synthetic data. Dashboard shows missing forwarding separately from session logging. Browser-downloaded workbook contains all expected rules and preserves start=no, end=yes, forwarding=none."
+}

@@ -1,0 +1,10 @@
+{
+  "dashboard_verified": true,
+  "rules_loaded": 13,
+  "application_findings": 1,
+  "profile_findings": 6,
+  "download_unique_rules_verified": 9,
+  "application_value_verified": "ssl;telnet",
+  "disabled_rule_excluded": true,
+  "scope": "Synthetic workbook; browser upload, visible findings, download, and downloaded Excel contents verified."
+}
