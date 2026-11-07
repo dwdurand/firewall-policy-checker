@@ -6,6 +6,26 @@ Developed by Dave Durand / A1 Cyber Services LLC.
 
 **Deterministic Python checks decide every finding. An optional, opt-in tab uses Claude (Anthropic API) to explain those findings; it never decides what is a finding.**
 
+## Screenshots
+
+Synthetic sample data only.
+
+**Executive dashboard**
+
+![Executive dashboard showing 13 rules analyzed and 8 findings](docs/screenshots/01-executive-dashboard.png)
+
+**Detailed findings**
+
+![Detailed audit findings with network/protocol and profile/logging sections](docs/screenshots/02-audit-findings.png)
+
+**AI tab: exact payload preview (rule names and addresses replaced with placeholders)**
+
+![JSON payload preview showing RULE-1 and ADDR-1 placeholders](docs/screenshots/03-ai-payload-preview.png)
+
+**AI tab: live Claude explanations, names restored locally**
+
+![Claude explanations table with manager summary, engineer note, and verify-before-change columns](docs/screenshots/04-ai-explanations-live.png)
+
 ## Status
 
 The corrected implementation has been exercised with synthetic data through offline tests, the Streamlit dashboard, and browser-downloaded Excel reports. It has not been validated against production exports in this development cycle.
