@@ -184,7 +184,7 @@ python panos_source.py --xml-file running-config.xml --device-group Branches --o
 ```
 
 - Sends only `type=config` with `action=show` (running, default) or `action=get` (`--candidate`). Any other action is refused in code.
-- Panorama: reads shared pre, device-group pre, device-group post and shared post rulebases, in that order. Parent device groups are not walked yet.
+- Panorama: walks the device-group hierarchy from the config's readonly `parent-dg` links. It reads rulebases in evaluation order: shared pre, then each ancestor's pre-rules from the top down, then the device group's own pre-rules, its post-rules, ancestor post-rules from the bottom up, and finally shared post. Inherited rows are labeled `(inherited)` in the `Rulebase` column. Use `--no-inherit` to read only the device group's own rules.
 - Members are joined with `;`. Absent elements take PAN-OS defaults (disabled `no`, log-start `no`, log-end `yes`).
 - Profile is the group name, or `type=name` pairs for individual profiles; blank when none is attached.
 - Adds `Rulebase`, `Position`, `Negate Source` and `Negate Destination` columns for review context. The checks ignore them.
@@ -193,7 +193,7 @@ python panos_source.py --xml-file running-config.xml --device-group Branches --o
 ## Scope and limitations
 
 - The dashboard reads an uploaded workbook. `panos_source.py` can read a device over the XML API using only show/get. Nothing creates, modifies, deletes, commits, or pushes configuration.
-- Does not resolve parent device-group inheritance or calculate effective policy. Rule order is recorded (`Rulebase`, `Position`) but not evaluated.
+- Resolves which device-group rulebases apply, but does not calculate effective policy. Rule order is recorded (`Rulebase`, `Position`) but not evaluated. Device-group inheritance is tested offline only.
 - Does not assess address/application groups, dependencies, negation, rule order, shadowing, NAT, routing, or effective reachability.
 - The explicit application list is limited to `telnet`, `http`, and `ftp`. It does not establish whether all cleartext traffic is blocked; `any`, other App-IDs, and service ports require separate review.
 - Does not inspect security-profile contents, log-forwarding destinations, actual log generation, or delivery to Panorama/syslog.
@@ -209,5 +209,6 @@ Use synthetic or appropriately sanitized workbooks for demonstrations and reposi
 
 - Validate an agreed real export format using sanitized data.
 - Validate `panos_source.py` against a lab Panorama and a sanitized production config.
-- Walk parent device groups; add shadowed-rule and zero-hit-count checks.
+- Validate device-group inheritance against a lab Panorama or a sanitized Panorama config export.
+- Add shadowed-rule and zero-hit-count checks.
 - Review live Claude explanations against sanitized real findings and refine the prompt.
