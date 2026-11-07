@@ -148,6 +148,19 @@ For the final corrected version, the synthetic workbook produced:
 
 The `application-list` rule containing `ssl;telnet` was included. The `deny-any-address` and `disabled-missing` rules were excluded from the final report. Separate offline address cases exercised positive `any` matches; the dashboard workbook's address result is zero.
 
+### Live lab validation: `panos_source.py` (2026-11-07)
+
+Ran against a VM-Series PAYG firewall (PAN-OS 11.1.13-h12) on AWS. Used a `superreader` API key, the running config, and vsys1. Four test rules were built to trigger known findings:
+
+| Rule | Expected finding | Observed |
+| --- | --- | --- |
+| good-rule | No log forwarding only | ✓ |
+| any-any | Any address + no log forwarding | ✓ |
+| telnet-allowed | Explicit telnet + no log forwarding | ✓ |
+| no-profile | Missing profile + no log forwarding | ✓ |
+
+Result: `Wrote 4 rules from 1 rulebase(s)`. The dashboard showed 4 rules analyzed and 7 findings, matching the expected counts. The built-in intrazone/interzone default rules are not part of the security rulebase config and were correctly excluded. Panorama device-group ingest has not been validated live yet.
+
 These are focused synthetic checks, not a claim of comprehensive test coverage. The package includes `sample-data/firewall-synthetic-validation.xlsx`, a portable test suite, and pinned dependencies. Run the tests from the repository root:
 
 ```powershell
