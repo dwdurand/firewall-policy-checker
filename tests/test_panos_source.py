@@ -91,6 +91,84 @@ class ParseTests(unittest.TestCase):
         self.assertTrue(unknown.empty)
 
 
+def _rule(name):
+    return (f'<entry name="{name}" uuid="u-{name}"><from><member>any</member></from>'
+            '<to><member>any</member></to><source><member>10.0.0.1</member></source>'
+            '<destination><member>10.0.0.2</member></destination>'
+            '<application><member>ssl</member></application>'
+            '<service><member>application-default</member></service><action>allow</action></entry>')
+
+
+def _rules(*names):
+    return '<security><rules>' + ''.join(_rule(n) for n in names) + '</rules></security>'
+
+
+# shared > Region > Branches, plus an unrelated top-level DG that must not leak in.
+HIER_CONFIG = f"""<config>
+  <shared><pre-rulebase>{_rules('s-pre')}</pre-rulebase><post-rulebase>{_rules('s-post')}</post-rulebase></shared>
+  <devices><entry name="localhost.localdomain"><device-group>
+    <entry name="Region"><pre-rulebase>{_rules('r-pre')}</pre-rulebase><post-rulebase>{_rules('r-post')}</post-rulebase></entry>
+    <entry name="Branches"><pre-rulebase>{_rules('b-pre1', 'b-pre2')}</pre-rulebase><post-rulebase>{_rules('b-post')}</post-rulebase></entry>
+    <entry name="Other"><pre-rulebase>{_rules('o-pre')}</pre-rulebase></entry>
+  </device-group></entry></devices>
+  <readonly><devices><entry name="localhost.localdomain"><device-group>
+    <entry name="Region"/>
+    <entry name="Branches"><parent-dg>Region</parent-dg></entry>
+    <entry name="Other"/>
+  </device-group></entry></devices></readonly>
+</config>"""
+
+
+class HierarchyTests(unittest.TestCase):
+    def test_ancestors_from_saved_config(self):
+        config = ps.load_config(HIER_CONFIG)
+        lookup = ps.config_parent_lookup(config)
+        self.assertEqual(ps.dg_ancestors('Branches', lookup), ['Region'])
+        self.assertEqual(ps.dg_ancestors('Region', lookup), [])
+
+    def test_inherited_rules_in_evaluation_order(self):
+        config = ps.load_config(HIER_CONFIG)
+        anc = ps.dg_ancestors('Branches', ps.config_parent_lookup(config))
+        df = ps.rules_from_config_xml(config, ps.panorama_rulebases('Branches', True, anc))
+        self.assertEqual(list(df['Rule Name']),
+                         ['s-pre', 'r-pre', 'b-pre1', 'b-pre2', 'b-post', 'r-post', 's-post'])
+        self.assertNotIn('o-pre', set(df['Rule Name']))
+        self.assertEqual(df.loc[df['Rule Name'] == 'r-pre', 'Rulebase'].item(),
+                         'DG Region pre-rulebase (inherited)')
+        self.assertEqual(df.loc[df['Rule Name'] == 'b-pre1', 'Rulebase'].item(),
+                         'DG Branches pre-rulebase')
+
+    def test_multi_level_and_loop(self):
+        parents = {'Leaf': 'Mid', 'Mid': 'Top', 'Top': None}
+        self.assertEqual(ps.dg_ancestors('Leaf', parents.get), ['Top', 'Mid'])
+        self.assertEqual(ps.dg_ancestors('Top', {'Top': 'shared'}.get), [])
+        with self.assertRaises(ValueError):
+            ps.dg_ancestors('A', {'A': 'B', 'B': 'A'}.get)
+
+    def test_cli_saved_config_with_and_without_inheritance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Path(tmp) / 'running-config.xml'
+            cfg.write_text(HIER_CONFIG, encoding='utf-8')
+            out = Path(tmp) / 'rules.xlsx'
+            ps.main(['--xml-file', str(cfg), '--device-group', 'Branches', '--out', str(out)])
+            self.assertEqual(len(pd.read_excel(out, sheet_name='firewall', header=1)), 7)
+            ps.main(['--xml-file', str(cfg), '--device-group', 'Branches', '--no-inherit', '--out', str(out)])
+            self.assertEqual(len(pd.read_excel(out, sheet_name='firewall', header=1)), 5)
+
+    def test_api_parent_lookup_reads_readonly_xpath(self):
+        client = ps.PanosReadOnlyClient('pano.test', 'k')
+        replies = {'Branches': '<parent-dg>Region</parent-dg>', 'Region': ''}
+
+        def fake_get(url, params, timeout):
+            name = params['xpath'].split("entry[@name='")[-1].split("'")[0]
+            self.assertIn('/config/readonly/', params['xpath'])
+            self.assertEqual(params['action'], 'show')
+            return MagicMock(text=f'<response status="success"><result>{replies[name]}</result></response>')
+
+        client.session.get = fake_get
+        self.assertEqual(ps.dg_ancestors('Branches', ps.api_parent_lookup(client)), ['Region'])
+
+
 class SourceTests(unittest.TestCase):
     def test_saved_config_and_workbook_roundtrip(self):
         df = ps.rules_from_config_xml(CONFIG, ps.panorama_rulebases('Branches'))

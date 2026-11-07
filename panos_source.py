@@ -59,17 +59,54 @@ def firewall_rulebases(vsys: str = 'vsys1') -> list[Rulebase]:
                      f"{DEVICE}/vsys/entry[@name='{_q(vsys)}']/rulebase/security/rules")]
 
 
-def panorama_rulebases(device_group: str, include_shared: bool = True) -> list[Rulebase]:
-    """Evaluation order: shared pre, DG pre, DG post, shared post."""
-    dg = f"{DEVICE}/device-group/entry[@name='{_q(device_group)}']"
+def panorama_rulebases(device_group: str, include_shared: bool = True,
+                       ancestors: list[str] | None = None) -> list[Rulebase]:
+    """Rulebases in PAN-OS evaluation order for one device group.
+
+    ancestors: parent chain from the top-most DG down to the immediate
+    parent (see dg_ancestors). Pre-rules evaluate shared -> top ancestor ->
+    ... -> device group; post-rules evaluate in the reverse direction.
+    """
+    chain = list(ancestors or []) + [device_group]
+
+    def dg_base(name: str, kind: str) -> Rulebase:
+        own = ' (inherited)' if name != device_group else ''
+        return Rulebase(f'DG {name} {kind}{own}',
+                        f"{DEVICE}/device-group/entry[@name='{_q(name)}']/{kind}/security/rules")
+
     bases = []
     if include_shared:
         bases.append(Rulebase('shared pre-rulebase', '/config/shared/pre-rulebase/security/rules'))
-    bases.append(Rulebase(f'DG {device_group} pre-rulebase', f'{dg}/pre-rulebase/security/rules'))
-    bases.append(Rulebase(f'DG {device_group} post-rulebase', f'{dg}/post-rulebase/security/rules'))
+    bases.extend(dg_base(name, 'pre-rulebase') for name in chain)
+    bases.extend(dg_base(name, 'post-rulebase') for name in reversed(chain))
     if include_shared:
         bases.append(Rulebase('shared post-rulebase', '/config/shared/post-rulebase/security/rules'))
     return bases
+
+
+def parent_dg_xpath(device_group: str) -> str:
+    """Panorama keeps the hierarchy in the readonly section of the config."""
+    return (f"/config/readonly/devices/entry[@name='localhost.localdomain']"
+            f"/device-group/entry[@name='{_q(device_group)}']/parent-dg")
+
+
+def dg_ancestors(device_group: str, get_parent) -> list[str]:
+    """Walk parent-dg links. Returns [top-most, ..., immediate parent].
+
+    get_parent(name) -> parent name or None. A DG directly under Shared has
+    no parent-dg. Raises on a loop, which would indicate a corrupt config.
+    """
+    chain, seen, current = [], {device_group}, device_group
+    while True:
+        parent = get_parent(current)
+        if not parent or parent.casefold() == 'shared':
+            break
+        if parent in seen:
+            raise ValueError(f'Device-group hierarchy loop at {parent!r}.')
+        seen.add(parent)
+        chain.append(parent)
+        current = parent
+    return list(reversed(chain))
 
 
 def _q(name: str) -> str:
@@ -149,12 +186,33 @@ def _xpath_to_path(xpath: str) -> str:
     return '/'.join(parts[1:])
 
 
-def rules_from_config_xml(xml_text: str, rulebases: Iterable[Rulebase]) -> pd.DataFrame:
-    """Parse a saved running/candidate config file."""
+def load_config(xml_text: str) -> ET.Element:
     root = ET.fromstring(xml_text)
     config = root if root.tag == 'config' else root.find('.//config')
     if config is None:
         raise ValueError('No <config> element found in XML file.')
+    return config
+
+
+def config_parent_lookup(config: ET.Element):
+    """get_parent() for dg_ancestors, backed by a saved config."""
+    def get_parent(name: str) -> str | None:
+        node = config.find(_xpath_to_path(parent_dg_xpath(name)))
+        return node.text.strip() if node is not None and node.text else None
+    return get_parent
+
+
+def api_parent_lookup(client: 'PanosReadOnlyClient', action: str = 'show'):
+    """get_parent() for dg_ancestors, backed by the read-only API."""
+    def get_parent(name: str) -> str | None:
+        node = client.config(parent_dg_xpath(name), action=action)
+        return node.text.strip() if node is not None and node.text else None
+    return get_parent
+
+
+def rules_from_config_xml(xml_text: str | ET.Element, rulebases: Iterable[Rulebase]) -> pd.DataFrame:
+    """Parse a saved running/candidate config file (text or loaded element)."""
+    config = xml_text if isinstance(xml_text, ET.Element) else load_config(xml_text)
     rows = []
     for rb in rulebases:
         rows.extend(parse_rules(config.find(_xpath_to_path(rb.xpath)), rb.label))
@@ -222,6 +280,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument('--device-group', help='Panorama device group (omit for a firewall)')
     p.add_argument('--vsys', default='vsys1', help='Firewall vsys (default vsys1)')
     p.add_argument('--no-shared', action='store_true', help='Skip Panorama shared rulebases')
+    p.add_argument('--no-inherit', action='store_true',
+                   help='Skip parent device-group rulebases (default: include them)')
     p.add_argument('--candidate', action='store_true', help='Read candidate config (default: running)')
     p.add_argument('--api-key-env', default='PANOS_API_KEY', help='Env var holding the API key')
     p.add_argument('--ca-bundle', help='CA bundle path for a self-signed lab certificate')
@@ -229,12 +289,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument('--out', required=True, help='Output .xlsx path')
     a = p.parse_args(argv)
 
-    bases = (panorama_rulebases(a.device_group, not a.no_shared) if a.device_group
-             else firewall_rulebases(a.vsys))
-
+    action = 'get' if a.candidate else 'show'
     if a.xml_file:
         with open(a.xml_file, encoding='utf-8') as fh:
-            df = rules_from_config_xml(fh.read(), bases)
+            config = load_config(fh.read())
+        get_parent = config_parent_lookup(config)
         note = f'Source: saved config {os.path.basename(a.xml_file)}'
     else:
         verify: bool | str = a.ca_bundle or True
@@ -242,9 +301,20 @@ def main(argv: list[str] | None = None) -> int:
             print('WARNING: TLS verification disabled. Use only on an isolated lab.', file=sys.stderr)
             verify = False
         client = PanosReadOnlyClient(a.host, os.environ.get(a.api_key_env, ''), verify=verify)
-        df = rules_from_api(client, bases, action='get' if a.candidate else 'show')
+        get_parent = api_parent_lookup(client, action)
         note = f"Source: {a.host} ({'candidate' if a.candidate else 'running'} config, read-only API)"
 
+    if a.device_group:
+        ancestors = [] if a.no_inherit else dg_ancestors(a.device_group, get_parent)
+        bases = panorama_rulebases(a.device_group, not a.no_shared, ancestors)
+        if ancestors:
+            print(f"Device-group chain: shared > {' > '.join(ancestors + [a.device_group])}")
+            note += f"; DG chain: {' > '.join(ancestors + [a.device_group])}"
+    else:
+        bases = firewall_rulebases(a.vsys)
+
+    df = (rules_from_config_xml(config, bases) if a.xml_file
+          else rules_from_api(client, bases, action=action))
     write_workbook(df, a.out, note)
     print(f'Wrote {len(df)} rules from {len(bases)} rulebase(s) to {a.out}')
     return 0
