@@ -6,7 +6,9 @@ unchanged on live or saved-config data.
 
 Sources:
   * Live XML API  - only type=config with action=get (candidate) or
-                    action=show (running) is ever sent. Nothing else is allowed.
+                    action=show (running), plus, with --hit-counts, the single
+                    read-only op command `show rule-hit-count`. Nothing else
+                    is allowed.
   * Saved XML     - a running-config/candidate-config file exported from the
                     device ("Export named configuration snapshot").
 
@@ -234,6 +236,17 @@ class PanosReadOnlyClient:
         self.session.verify = verify
         self.timeout = timeout
 
+    def op(self, cmd: str) -> ET.Element:
+        """Run an operational command. Only `show rule-hit-count` is allowed."""
+        if not cmd.startswith(HIT_COUNT_PREFIX):
+            raise PermissionError('Only <show><rule-hit-count> operational commands are allowed.')
+        resp = self.session.get(self.url, params={'type': 'op', 'cmd': cmd}, timeout=self.timeout)
+        resp.raise_for_status()
+        root = ET.fromstring(resp.text)
+        if root.get('status') != 'success':
+            raise RuntimeError(f"PAN-OS API error for hit counts: {''.join(root.itertext()).strip()}")
+        return root
+
     def config(self, xpath: str, action: str = 'show') -> ET.Element | None:
         if action not in READ_ONLY_ACTIONS:
             raise PermissionError(f'Action {action!r} is not read-only; refusing.')
@@ -256,6 +269,56 @@ def rules_from_api(client: PanosReadOnlyClient, rulebases: Iterable[Rulebase],
     for rb in rulebases:
         rows.extend(parse_rules(client.config(rb.xpath, action=action), rb.label))
     return to_frame(rows)
+
+
+# ---------------------------------------------------------------- hit counts
+
+HIT_COUNT_PREFIX = '<show><rule-hit-count>'
+HIT_COLUMNS = ['Hit Count', 'Last Hit', 'Rule Created']
+
+
+def hit_count_cmd(vsys: str = 'vsys1') -> str:
+    return (f"{HIT_COUNT_PREFIX}<vsys><vsys-name><entry name='{_q(vsys)}'><rule-base>"
+            "<entry name='security'><rules><all/></rules></entry></rule-base></entry>"
+            "</vsys-name></vsys></rule-hit-count></show>")
+
+
+def _epoch(value: str | None) -> str:
+    """PAN-OS epoch seconds -> 'YYYY-MM-DD HH:MM UTC'; 0/blank means never."""
+    from datetime import datetime, timezone
+    try:
+        seconds = int(value or 0)
+    except ValueError:
+        return ''
+    return datetime.fromtimestamp(seconds, timezone.utc).strftime('%Y-%m-%d %H:%M UTC') if seconds else ''
+
+
+def parse_hit_counts(root: ET.Element) -> dict[str, dict]:
+    """Rule name -> hit-count fields, from `show rule-hit-count` output."""
+    counts = {}
+    for entry in root.iter('entry'):
+        hit = entry.find('hit-count')
+        if hit is None or not entry.get('name'):
+            continue
+        try:
+            value = int((hit.text or '').strip())
+        except ValueError:
+            continue
+        counts[entry.get('name')] = {
+            'Hit Count': value,
+            'Last Hit': _epoch(entry.findtext('last-hit-timestamp')),
+            'Rule Created': _epoch(entry.findtext('rule-creation-timestamp')),
+        }
+    return counts
+
+
+def apply_hit_counts(df: pd.DataFrame, counts: dict[str, dict]) -> pd.DataFrame:
+    """Add HIT_COLUMNS. Rules missing from the output get a blank (unknown) count."""
+    df = df.copy()
+    for column in HIT_COLUMNS:
+        df[column] = df['Rule Name'].map(lambda name: counts.get(name, {}).get(column))
+    df['Hit Count'] = df['Hit Count'].astype('Int64')
+    return df
 
 
 # ---------------------------------------------------------------- output
@@ -283,11 +346,18 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument('--no-inherit', action='store_true',
                    help='Skip parent device-group rulebases (default: include them)')
     p.add_argument('--candidate', action='store_true', help='Read candidate config (default: running)')
+    p.add_argument('--hit-counts', action='store_true',
+                   help='Firewall only: also read rule hit counts (op command show rule-hit-count)')
+    p.add_argument('--hit-count-xml', help='Saved `show rule-hit-count` XML output to merge instead')
     p.add_argument('--api-key-env', default='PANOS_API_KEY', help='Env var holding the API key')
     p.add_argument('--ca-bundle', help='CA bundle path for a self-signed lab certificate')
     p.add_argument('--insecure', action='store_true', help='Disable TLS verification (lab only)')
     p.add_argument('--out', required=True, help='Output .xlsx path')
     a = p.parse_args(argv)
+    if (a.hit_counts or a.hit_count_xml) and a.device_group:
+        p.error('Hit counts are per firewall; not supported with --device-group yet.')
+    if a.hit_counts and not a.host:
+        p.error('--hit-counts needs --host; use --hit-count-xml with a saved config.')
 
     action = 'get' if a.candidate else 'show'
     if a.xml_file:
@@ -315,6 +385,20 @@ def main(argv: list[str] | None = None) -> int:
 
     df = (rules_from_config_xml(config, bases) if a.xml_file
           else rules_from_api(client, bases, action=action))
+
+    if a.hit_count_xml:
+        with open(a.hit_count_xml, encoding='utf-8') as fh:
+            counts = parse_hit_counts(ET.fromstring(fh.read()))
+        note += f'; hit counts: {os.path.basename(a.hit_count_xml)}'
+    elif a.hit_counts:
+        counts = parse_hit_counts(client.op(hit_count_cmd(a.vsys)))
+        note += '; hit counts: live'
+    else:
+        counts = None
+    if counts is not None:
+        df = apply_hit_counts(df, counts)
+        print(f"Hit counts found for {int(df['Hit Count'].notna().sum())} of {len(df)} rules")
+
     write_workbook(df, a.out, note)
     print(f'Wrote {len(df)} rules from {len(bases)} rulebase(s) to {a.out}')
     return 0

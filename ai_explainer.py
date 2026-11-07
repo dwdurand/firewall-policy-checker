@@ -58,6 +58,12 @@ FINDING_TYPES: dict[str, str] = {
         "differ. Groups, users, URL categories, HIP, schedules and other match "
         "criteria were not compared; hit counts were not checked."
     ),
+    "unused_rule": (
+        "Enabled rule whose firewall hit count is 0. Counters reset on reboot, "
+        "manual reset and some upgrades, and new rules start at zero; 'Last Hit' "
+        "and 'Rule Created' are included when known. Seasonal or failover traffic "
+        "may not have occurred in the counting window."
+    ),
 }
 
 # Only these columns may be sent. UUID, descriptions, tags, owners and every
@@ -78,6 +84,9 @@ ALLOWED_FIELDS = [
     "Shadowed By",
     "Shadowed By Action",
     "Action Conflict",
+    "Hit Count",
+    "Last Hit",
+    "Rule Created",
 ]
 
 ADDRESS_FIELDS = {"Source Address", "Destination Address"}

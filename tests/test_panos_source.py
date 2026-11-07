@@ -169,6 +169,58 @@ class HierarchyTests(unittest.TestCase):
         self.assertEqual(ps.dg_ancestors('Branches', ps.api_parent_lookup(client)), ['Region'])
 
 
+HIT_XML = """<response status="success"><result><rule-hit-count><vsys><entry name="vsys1">
+<rule-base><entry name="security"><rules>
+  <entry name="web-out"><latest>yes</latest><hit-count>42</hit-count>
+    <last-hit-timestamp>1793990000</last-hit-timestamp><rule-creation-timestamp>1780000000</rule-creation-timestamp></entry>
+  <entry name="no-profile"><latest>yes</latest><hit-count>0</hit-count>
+    <last-hit-timestamp>0</last-hit-timestamp><rule-creation-timestamp>1780000000</rule-creation-timestamp></entry>
+</rules></entry></rule-base></entry></vsys></rule-hit-count></result></response>"""
+
+FW_CONFIG = f"""<config><devices><entry name="localhost.localdomain"><vsys><entry name="vsys1">
+<rulebase><security>{RULES}</security></rulebase></entry></vsys></entry></devices></config>"""
+
+
+class HitCountTests(unittest.TestCase):
+    def test_parse_and_apply(self):
+        import xml.etree.ElementTree as ET
+        counts = ps.parse_hit_counts(ET.fromstring(HIT_XML))
+        self.assertEqual(counts['web-out']['Hit Count'], 42)
+        self.assertEqual(counts['no-profile']['Last Hit'], '')            # 0 means never
+        self.assertTrue(counts['web-out']['Last Hit'].endswith('UTC'))
+        df = ps.apply_hit_counts(ps.rules_from_config_xml(FW_CONFIG, ps.firewall_rulebases()), counts)
+        by_name = dict(zip(df['Rule Name'], df['Hit Count']))
+        self.assertEqual(by_name['web-out'], 42)
+        self.assertEqual(by_name['no-profile'], 0)
+        self.assertTrue(pd.isna(by_name['individual-profiles']))       # missing -> unknown, not zero
+
+    def test_op_guard_and_command(self):
+        client = ps.PanosReadOnlyClient('fw.test', 'k')
+        for cmd in ('<request><restart><system/></restart></request>', '<clear><rule-hit-count/></clear>',
+                    '<show><system><info/></system></show>'):
+            with self.assertRaises(PermissionError):
+                client.op(cmd)
+        client.session.get = MagicMock(return_value=MagicMock(text=HIT_XML))
+        counts = ps.parse_hit_counts(client.op(ps.hit_count_cmd('vsys1')))
+        self.assertEqual(len(counts), 2)
+        _, kwargs = client.session.get.call_args
+        self.assertEqual(kwargs['params']['type'], 'op')
+        self.assertIn("<entry name='vsys1'>", kwargs['params']['cmd'])
+
+    def test_cli_with_saved_hit_counts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg, hits, out = Path(tmp) / 'cfg.xml', Path(tmp) / 'hits.xml', Path(tmp) / 'rules.xlsx'
+            cfg.write_text(FW_CONFIG, encoding='utf-8')
+            hits.write_text(HIT_XML, encoding='utf-8')
+            ps.main(['--xml-file', str(cfg), '--hit-count-xml', str(hits), '--out', str(out)])
+            back = pd.read_excel(out, sheet_name='firewall', header=1)
+            self.assertEqual(list(back.columns[-3:]), ps.HIT_COLUMNS)
+            with self.assertRaises(SystemExit):
+                ps.main(['--xml-file', str(cfg), '--device-group', 'X', '--hit-count-xml', str(hits), '--out', str(out)])
+            with self.assertRaises(SystemExit):
+                ps.main(['--xml-file', str(cfg), '--hit-counts', '--out', str(out)])
+
+
 class SourceTests(unittest.TestCase):
     def test_saved_config_and_workbook_roundtrip(self):
         df = ps.rules_from_config_xml(CONFIG, ps.panorama_rulebases('Branches'))
